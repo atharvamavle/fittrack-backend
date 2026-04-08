@@ -1,0 +1,218 @@
+from fastapi import APIRouter, Depends
+from sqlalchemy.orm import Session
+from sqlalchemy import func, cast, Date
+from database import get_db
+from models import Workout, Meal
+from fpdf import FPDF
+from datetime import date, timedelta
+from calendar import monthrange
+import telegram
+import os
+import asyncio
+
+router = APIRouter()
+
+# ── PDF Generator ────────────────────────────────────────────
+def generate_pdf(report_type: str, data: dict) -> str:
+    pdf = FPDF()
+    pdf.add_page()
+
+    # Header
+    pdf.set_font("Helvetica", "B", 22)
+    pdf.set_text_color(1, 105, 111)  # teal color
+    pdf.cell(0, 12, "FitTrack Report", ln=True, align="C")
+
+    pdf.set_font("Helvetica", "", 12)
+    pdf.set_text_color(100, 100, 100)
+    pdf.cell(0, 8, f"Period: {data['period']}", ln=True, align="C")
+    pdf.cell(0, 8, f"Generated: {date.today().strftime('%d %B %Y')}", ln=True, align="C")
+    pdf.ln(8)
+
+    # Divider line
+    pdf.set_draw_color(1, 105, 111)
+    pdf.set_line_width(0.8)
+    pdf.line(10, pdf.get_y(), 200, pdf.get_y())
+    pdf.ln(6)
+
+    # Summary section
+    pdf.set_font("Helvetica", "B", 14)
+    pdf.set_text_color(30, 30, 30)
+    pdf.cell(0, 10, "Summary", ln=True)
+
+    pdf.set_font("Helvetica", "", 12)
+    pdf.set_text_color(60, 60, 60)
+
+    summary_items = [
+        ("Total Calories Burned",  f"{data['total_calories_burned']} kcal"),
+        ("Total Calories Eaten",   f"{data['total_calories_eaten']} kcal"),
+        ("Net Calories",           f"{data['net_calories']} kcal"),
+        ("Total Workouts",         str(data['total_workouts'])),
+        ("Total Meals Logged",     str(data['total_meals'])),
+    ]
+    for label, value in summary_items:
+        pdf.cell(90, 9, label + ":", border=0)
+        pdf.set_font("Helvetica", "B", 12)
+        pdf.cell(0, 9, value, ln=True)
+        pdf.set_font("Helvetica", "", 12)
+
+    pdf.ln(5)
+
+    # Workouts section
+    pdf.set_font("Helvetica", "B", 14)
+    pdf.set_text_color(30, 30, 30)
+    pdf.cell(0, 10, "Workouts", ln=True)
+
+    if data["workouts"]:
+        # Table header
+        pdf.set_fill_color(1, 105, 111)
+        pdf.set_text_color(255, 255, 255)
+        pdf.set_font("Helvetica", "B", 11)
+        pdf.cell(55, 9, "Type",     fill=True, border=1)
+        pdf.cell(35, 9, "Duration", fill=True, border=1)
+        pdf.cell(40, 9, "Calories", fill=True, border=1)
+        pdf.cell(35, 9, "Source",   fill=True, border=1, ln=True)
+
+        pdf.set_text_color(40, 40, 40)
+        pdf.set_font("Helvetica", "", 11)
+        for i, w in enumerate(data["workouts"]):
+            fill = i % 2 == 0
+            pdf.set_fill_color(240, 248, 248) if fill else pdf.set_fill_color(255, 255, 255)
+            pdf.cell(55, 8, w["type"].title(),           fill=fill, border=1)
+            pdf.cell(35, 8, f"{w['duration']} min",      fill=fill, border=1)
+            pdf.cell(40, 8, f"{w['calories']} kcal",     fill=fill, border=1)
+            source_icons = {"alexa": "Alexa", "watch": "Watch", "manual": "Manual"}
+            pdf.cell(35, 8, source_icons.get(w["source"], w["source"]), fill=fill, border=1, ln=True)
+    else:
+        pdf.set_font("Helvetica", "I", 11)
+        pdf.set_text_color(150, 150, 150)
+        pdf.cell(0, 8, "No workouts logged for this period.", ln=True)
+
+    pdf.ln(5)
+
+    # Meals section
+    pdf.set_font("Helvetica", "B", 14)
+    pdf.set_text_color(30, 30, 30)
+    pdf.cell(0, 10, "Meals", ln=True)
+
+    if data["meals"]:
+        pdf.set_fill_color(1, 105, 111)
+        pdf.set_text_color(255, 255, 255)
+        pdf.set_font("Helvetica", "B", 11)
+        pdf.cell(55, 9, "Food",     fill=True, border=1)
+        pdf.cell(35, 9, "Meal",     fill=True, border=1)
+        pdf.cell(30, 9, "Calories", fill=True, border=1)
+        pdf.cell(25, 9, "Protein",  fill=True, border=1)
+        pdf.cell(20, 9, "Source",   fill=True, border=1, ln=True)
+
+        pdf.set_text_color(40, 40, 40)
+        pdf.set_font("Helvetica", "", 11)
+        for i, m in enumerate(data["meals"]):
+            fill = i % 2 == 0
+            pdf.set_fill_color(240, 248, 248) if fill else pdf.set_fill_color(255, 255, 255)
+            pdf.cell(55, 8, m["food"][:22],               fill=fill, border=1)
+            pdf.cell(35, 8, m["meal_type"].title(),       fill=fill, border=1)
+            pdf.cell(30, 8, f"{m['calories']} kcal",      fill=fill, border=1)
+            pdf.cell(25, 8, f"{m['protein_g']}g",         fill=fill, border=1)
+            source_icons = {"alexa": "Alexa", "watch": "Watch", "manual": "Manual"}
+            pdf.cell(20, 8, source_icons.get(m["source"], m["source"]), fill=fill, border=1, ln=True)
+    else:
+        pdf.set_font("Helvetica", "I", 11)
+        pdf.set_text_color(150, 150, 150)
+        pdf.cell(0, 8, "No meals logged for this period.", ln=True)
+
+    # Footer
+    pdf.ln(10)
+    pdf.set_font("Helvetica", "I", 9)
+    pdf.set_text_color(150, 150, 150)
+    pdf.cell(0, 8, "Generated by FitTrack — Your Personal Fitness Dashboard", align="C")
+
+    filepath = f"/tmp/fittrack_report_{report_type}_{date.today()}.pdf"
+    pdf.output(filepath)
+    return filepath
+
+
+# ── Send PDF to Telegram ─────────────────────────────────────
+async def send_telegram_pdf(filepath: str, caption: str):
+    bot = Bot(token=os.getenv("TELEGRAM_BOT_TOKEN"))
+    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+    with open(filepath, "rb") as f:
+        await bot.send_document(
+            chat_id=chat_id,
+            document=f,
+            caption=caption
+        )
+
+
+# ── Build report data from DB ────────────────────────────────
+def build_report_data(report_type: str, db: Session) -> dict:
+    today = date.today()
+
+    if report_type == "today":
+        start_date = today
+        end_date = today
+        period = today.strftime("%d %B %Y")
+    else:  # monthly
+        start_date = today.replace(day=1)
+        last_day = monthrange(today.year, today.month)[1]
+        end_date = today.replace(day=last_day)
+        period = today.strftime("%B %Y")
+
+    workouts = db.query(Workout).filter(
+        cast(Workout.performed_at, Date) >= start_date,
+        cast(Workout.performed_at, Date) <= end_date
+    ).all()
+
+    meals = db.query(Meal).filter(
+        cast(Meal.logged_at, Date) >= start_date,
+        cast(Meal.logged_at, Date) <= end_date
+    ).all()
+
+    total_burned = sum(w.calories_burned or 0 for w in workouts)
+    total_eaten  = sum(m.calories or 0 for m in meals)
+
+    return {
+        "period": period,
+        "report_type": report_type,
+        "total_calories_burned": round(total_burned, 1),
+        "total_calories_eaten":  round(total_eaten, 1),
+        "net_calories":          round(total_eaten - total_burned, 1),
+        "total_workouts":        len(workouts),
+        "total_meals":           len(meals),
+        "workouts": [
+            {"type": w.workout_type, "duration": w.duration_minutes,
+             "calories": round(w.calories_burned or 0, 1), "source": w.source}
+            for w in workouts
+        ],
+        "meals": [
+            {"food": m.food_name, "meal_type": m.meal_type,
+             "calories": round(m.calories or 0, 1),
+             "protein_g": round(m.protein_g or 0, 1), "source": m.source}
+            for m in meals
+        ]
+    }
+
+
+# ── API Endpoint ─────────────────────────────────────────────
+@router.post("/report/{report_type}")
+async def generate_and_send_report(report_type: str, db: Session = Depends(get_db)):
+    """
+    report_type: "today" or "monthly"
+    Alexa calls this after asking the user which period they want.
+    """
+    if report_type not in ["today", "monthly"]:
+        return {"error": "report_type must be 'today' or 'monthly'"}
+
+    data = build_report_data(report_type, db)
+    filepath = generate_pdf(report_type, data)
+
+    caption = (
+        f"📊 *FitTrack {report_type.title()} Report*\n"
+        f"Period: {data['period']}\n"
+        f"🔥 Burned: {data['total_calories_burned']} kcal\n"
+        f"🍽️ Eaten: {data['total_calories_eaten']} kcal\n"
+        f"💪 Workouts: {data['total_workouts']}\n"
+        f"📝 Meals: {data['total_meals']}"
+    )
+
+    await send_telegram_pdf(filepath, caption)
+    return {"message": f"{report_type.title()} report sent to Telegram successfully"}

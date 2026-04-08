@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+sqlalchemy
+psycopg2-binary
+python-dotenv
+openai
+httpx
+fpdf2
+python-telegram-bot
