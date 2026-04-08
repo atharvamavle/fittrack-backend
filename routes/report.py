@@ -4,12 +4,10 @@ from sqlalchemy import func, cast, Date
 from database import get_db
 from models import Workout, Meal
 from fpdf import FPDF
-from datetime import timedelta
 from calendar import monthrange
 from date_utils import today_in_aest
 from telegram import Bot
 import os
-import asyncio
 
 router = APIRouter()
 
