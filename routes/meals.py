@@ -132,6 +132,12 @@ async def log_meal(data: MealIn, db: Session = Depends(get_db)):
             calories, protein, carbs, fat = 0, 0, 0, 0
             nutrition_source = "not_found"
 
+    if not calories or calories == 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Calories could not be determined. Enter manually.",
+        )
+
     meal = Meal(
         meal_type=data.meal_type,
         food_name=data.food_name,

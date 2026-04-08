@@ -3,13 +3,13 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func, cast, Date
 from database import get_db
 from models import Workout, Meal
-from datetime import date
+from date_utils import today_in_aest
 
 router = APIRouter()
 
 @router.get("/summary")
 def get_summary(db: Session = Depends(get_db)):
-    today = date.today()
+    today = today_in_aest()
 
     calories_burned = db.query(func.sum(Workout.calories_burned)).filter(
         cast(Workout.performed_at, Date) == today
